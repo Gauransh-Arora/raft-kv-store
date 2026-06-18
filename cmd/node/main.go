@@ -40,7 +40,10 @@ func main() {
 		}
 	}
 
-	node := raft.NewNode(*id, peers)
+	node, err := raft.NewNode(*id, peers, "./data")
+	if err != nil {
+		log.Fatalf("Failed to initialise node: %v", err)
+	}
 	// node.AppendLog(
 	// 	raft.LogEntry{
 	// 		Term:    1,
@@ -48,7 +51,6 @@ func main() {
 	// 	},
 	// )
 
-	node.PrintLog()
 	node.StartElectionTimer()
 
 	go func() {
@@ -98,6 +100,10 @@ func main() {
 				if err != nil {
 					continue
 				}
+				if resp.Term > node.GetCurrentTerm() {
+					node.BecomeFollower(resp.Term)
+					break
+				}
 				if resp.VoteGranted {
 					votes++
 				}
@@ -115,6 +121,7 @@ func main() {
 	http.HandleFunc("/ping", network.PingHandler())
 	http.HandleFunc("/raft/heartbeat", network.HeartbeatHandler(node))
 	http.HandleFunc("/raft/requestVote", network.RequestVoteHandler(node))
+	http.HandleFunc("/raft/appendEntries", network.AppendEntriesHandler(node))
 
 	log.Printf("Node %d running on :%s\n", *id, *port)
 	log.Fatal(http.ListenAndServe(":"+*port, nil))

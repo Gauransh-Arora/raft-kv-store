@@ -16,7 +16,17 @@
 
 # Go workspace file
 go.work
+go.work.sum
 
 # OS specific files
 .DS_Store
 Thumbs.db
+
+# Raft WAL and node data directory
+# Contains per-node write-ahead logs (data/node-<id>/wal.log)
+# These are runtime artefacts and should not be committed.
+data/
+
+# Compiled binary output
+raft-kv-store
+raft-kv-store.exe

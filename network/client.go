@@ -43,3 +43,26 @@ func SendVoteRequest(address string, req raft.RequestVoteRequest) (*raft.Request
 
 	return &voteResp, nil
 }
+
+func SendAppendEntries(address string, req raft.AppendEntriesRequest)(*raft.AppendEntriesResponse, error){
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := http.Post(
+		"http://"+address+"/raft/appendEntries",
+		"application/json",
+		bytes.NewBuffer(body),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var entriesResp raft.AppendEntriesResponse
+	if err := json.NewDecoder(resp.Body).Decode(&entriesResp); err != nil {
+		return nil, err
+	}
+
+	return &entriesResp, nil
+}
