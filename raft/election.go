@@ -2,6 +2,7 @@ package raft
 
 import (
 	"log"
+	"math/rand"
 	"time"
 )
 
@@ -10,34 +11,33 @@ func (n *Node) StartElectionTimer() {
 		for {
 			n.mu.RLock()
 			state := n.State
-			n.mu.RUnlock()
-			if state != Follower {
-				time.Sleep(500 * time.Millisecond)
-				continue
-			}
 			elapsed := time.Since(n.LastHeartbeat)
-			if elapsed > n.ElectionTimeout {
+			timeout := n.ElectionTimeout
+			n.mu.RUnlock()
+
+			if state != Leader && elapsed > timeout {
 				n.StartElection()
 			}
-			time.Sleep(500 * time.Millisecond)
+			time.Sleep(300 * time.Millisecond)
 		}
 	}()
 }
 
 func (n *Node) StartElection() {
-
 	n.mu.Lock()
+	defer n.mu.Unlock()
 
 	n.State = Candidate
 	n.CurrentTerm++
 	n.VotedFor = n.ID
+	n.ElectionTimeout = time.Duration(8+rand.Intn(5)) * time.Second
 	n.LastHeartbeat = time.Now()
+	n.persistStateLocked()
 
 	log.Printf(
-		"Node %d became Candidate (term %d)",
+		"Node %d became Candidate (term %d, timeout %v)",
 		n.ID,
 		n.CurrentTerm,
+		n.ElectionTimeout,
 	)
-
-	n.mu.Unlock()
 }

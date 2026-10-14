@@ -14,25 +14,19 @@ func main() {
 	id := flag.Int("id", 1, "node id")
 	port := flag.String("port", "8001", "port")
 	flag.Parse()
-	// node := raft.NewNode(
-	// 	*id,
-	// 	[]string{},
-	// )
-	var peers []string
 
+	var peers []string
 	switch *id {
 	case 1:
 		peers = []string{
 			"localhost:8002",
 			"localhost:8003",
 		}
-
 	case 2:
 		peers = []string{
 			"localhost:8001",
 			"localhost:8003",
 		}
-
 	case 3:
 		peers = []string{
 			"localhost:8001",
@@ -44,57 +38,53 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to initialise node: %v", err)
 	}
-	// node.AppendLog(
-	// 	raft.LogEntry{
-	// 		Term:    1,
-	// 		Command: "SET name gauransh",
-	// 	},
-	// )
 
 	node.StartElectionTimer()
 
+	// Leader heartbeat loop: sends heartbeats with LeaderCommit to all peers
 	go func() {
 		for {
-
 			if node.IsLeader() {
-
 				for _, peer := range node.Peers {
-
-					err := network.SendHeartbeat(
-						peer,
-						raft.HeartbeatRequest{
-							Term:     node.GetCurrentTerm(),
-							LeaderID: node.ID,
-						},
-					)
-
-					if err != nil {
-						log.Printf(
-							"heartbeat to %s failed: %v",
-							peer,
-							err,
-						)
-					}
+					go func(p string) {
+						// Attempt log replication if peer is behind, otherwise heartbeat
+						if !network.ReplicateToPeer(node, p) {
+							_ = network.SendHeartbeat(
+								p,
+								raft.HeartbeatRequest{
+									Term:         node.GetCurrentTerm(),
+									LeaderID:     node.ID,
+									LeaderCommit: node.GetCommitIndex(),
+								},
+							)
+						}
+					}(peer)
 				}
 			}
-
 			time.Sleep(2 * time.Second)
 		}
 	}()
 
+	// Candidate election loop: solicits votes with log freshness (LastLogIndex & LastLogTerm)
 	go func() {
 		for {
 			time.Sleep(1 * time.Second)
 			if !node.IsCandidate() {
 				continue
 			}
+
+			lastLogIndex, lastLogTerm := node.GetLastLogIndexAndTerm()
+			currentTerm := node.GetCurrentTerm()
 			votes := 1
+
 			for _, peer := range node.Peers {
 				resp, err := network.SendVoteRequest(
 					peer,
 					raft.RequestVoteRequest{
-						Term:        node.GetCurrentTerm(),
-						CandidateID: node.ID,
+						Term:         currentTerm,
+						CandidateID:  node.ID,
+						LastLogIndex: lastLogIndex,
+						LastLogTerm:  lastLogTerm,
 					},
 				)
 				if err != nil {
@@ -108,10 +98,11 @@ func main() {
 					votes++
 				}
 			}
-			log.Printf("Node %d received %d votes", node.ID, votes)
-			if votes >= 2 {
-				node.BecomeLeader()
 
+			log.Printf("Node %d received %d votes (term %d)", node.ID, votes, currentTerm)
+			majority := (len(node.Peers)+1)/2 + 1
+			if node.IsCandidate() && node.GetCurrentTerm() == currentTerm && votes >= majority {
+				node.BecomeLeader()
 			}
 		}
 	}()

@@ -4,21 +4,30 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/Gauransh-Arora/raft-kv-store/raft"
 )
+
+var httpClient = &http.Client{
+	Timeout: 1500 * time.Millisecond,
+}
 
 func SendHeartbeat(address string, req raft.HeartbeatRequest) error {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return err
 	}
-	_, err = http.Post(
+	resp, err := httpClient.Post(
 		"http://"+address+"/raft/heartbeat",
 		"application/json",
 		bytes.NewBuffer(body),
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	return nil
 }
 
 func SendVoteRequest(address string, req raft.RequestVoteRequest) (*raft.RequestVoteResponse, error) {
@@ -26,7 +35,7 @@ func SendVoteRequest(address string, req raft.RequestVoteRequest) (*raft.Request
 	if err != nil {
 		return nil, err
 	}
-	resp, err := http.Post(
+	resp, err := httpClient.Post(
 		"http://"+address+"/raft/requestVote",
 		"application/json",
 		bytes.NewBuffer(body),
@@ -44,12 +53,12 @@ func SendVoteRequest(address string, req raft.RequestVoteRequest) (*raft.Request
 	return &voteResp, nil
 }
 
-func SendAppendEntries(address string, req raft.AppendEntriesRequest)(*raft.AppendEntriesResponse, error){
+func SendAppendEntries(address string, req raft.AppendEntriesRequest) (*raft.AppendEntriesResponse, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := http.Post(
+	resp, err := httpClient.Post(
 		"http://"+address+"/raft/appendEntries",
 		"application/json",
 		bytes.NewBuffer(body),

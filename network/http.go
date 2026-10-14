@@ -3,6 +3,7 @@ package network
 import (
 	"encoding/json"
 	"net/http"
+	"sync"
 
 	"github.com/Gauransh-Arora/raft-kv-store/raft"
 )
@@ -10,6 +11,39 @@ import (
 type SetRequest struct {
 	Key   string `json:"key"`
 	Value string `json:"value"`
+}
+
+func ReplicateToPeer(node *raft.Node, peer string) bool {
+	for attempt := 0; attempt < 5; attempt++ {
+		if !node.IsLeader() {
+			return false
+		}
+		prevIndex, prevTerm, entries, leaderCommit := node.GetPeerReplicationInfo(peer)
+		req := raft.AppendEntriesRequest{
+			Term:         node.GetCurrentTerm(),
+			LeaderID:     node.ID,
+			PrevLogIndex: prevIndex,
+			PrevLogTerm:  prevTerm,
+			Entries:      entries,
+			LeaderCommit: leaderCommit,
+		}
+
+		resp, err := SendAppendEntries(peer, req)
+		if err != nil {
+			return false
+		}
+		if resp.Term > node.GetCurrentTerm() {
+			node.BecomeFollower(resp.Term)
+			return false
+		}
+		if resp.Success {
+			node.RecordPeerAppendSuccess(peer, resp.MatchIndex)
+			return true
+		}
+
+		node.RecordPeerAppendFailure(peer, resp.MatchIndex)
+	}
+	return false
 }
 
 func SetHandler(node *raft.Node) http.HandlerFunc {
@@ -24,49 +58,37 @@ func SetHandler(node *raft.Node) http.HandlerFunc {
 			return
 		}
 
-		entry := raft.LogEntry{
-			Term:    node.GetCurrentTerm(),
-			Command: "SET " + req.Key + " " + req.Value,
-		}
-
-		if err := node.AppendLog(entry); err != nil {
+		entry := node.CreateSetCommand(req.Key, req.Value)
+		entryIndex, err := node.AppendLog(entry)
+		if err != nil {
 			http.Error(w, "WAL write failed: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		appendReq := raft.AppendEntriesRequest{
-			Term:     node.GetCurrentTerm(),
-			LeaderID: node.ID,
-			Entries:  []raft.LogEntry{entry},
-		}
-
-		acks := 1
+		var wg sync.WaitGroup
 		for _, peer := range node.Peers {
-			resp, err := SendAppendEntries(peer, appendReq)
-			if err != nil {
-				continue
-			}
-			if resp.Term > node.GetCurrentTerm() {
-				node.BecomeFollower(resp.Term)
-				http.Error(w, "stepped down: higher term observed", http.StatusInternalServerError)
-				return
-			}
-			if resp.Success {
-				acks++
-			}
+			wg.Add(1)
+			go func(p string) {
+				defer wg.Done()
+				ReplicateToPeer(node, p)
+			}(peer)
 		}
+		wg.Wait()
 
-		if acks < 2 {
-			http.Error(w, "failed to reach majority", http.StatusInternalServerError)
+		if !node.IsLeader() {
+			http.Error(w, "stepped down: higher term observed", http.StatusInternalServerError)
 			return
 		}
 
-		node.AdvanceCommitIndex(node.GetLogLen())
-		node.ApplyLogEntry(entry)
+		if node.GetCommitIndex() < entryIndex {
+			http.Error(w, "failed to reach majority commitment", http.StatusInternalServerError)
+			return
+		}
 
+		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"status": "committed",
-			"acks":   acks,
+			"index":  entryIndex,
 		})
 	}
 }
@@ -79,6 +101,7 @@ func GetHandler(node *raft.Node) http.HandlerFunc {
 			http.Error(w, "key not found", http.StatusNotFound)
 			return
 		}
+		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{
 			"value": value,
 		})
